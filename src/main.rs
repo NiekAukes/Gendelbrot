@@ -1,16 +1,20 @@
 use std::fs::File;
 use std::io::prelude::*;
+use std::thread;
+use std::sync::{mpsc, Arc, Mutex};
+
+const THREADS: usize = 3;
 
 const STABLE_ITERATIONS: i32 = 200;
 
-const WIDTH: f64 = 0.0005;
-const HEIGHT: f64 = 0.0005;
+const WIDTH: f64 = 4.0;
+const HEIGHT: f64 = 4.0;
 
-const REAL_CENTER: f64 = -0.757;
-const I_CENTER: f64 = 0.0615;
+const REAL_CENTER: f64 = 0.0;
+const I_CENTER: f64 = 0.0;
 
-const IMAGE_WIDTH: usize = 3072;
-const IMAGE_HEIGHT: usize = 3072;
+const IMAGE_WIDTH: usize = 6096;
+const IMAGE_HEIGHT: usize = 6096;
 
 const REAL_START: f64 = -(WIDTH / 2.0) + REAL_CENTER;
 const I_START: f64 = HEIGHT/2.0 + I_CENTER;
@@ -37,7 +41,7 @@ impl Complex {
         if self.real*self.real + self.imaginary*self.imaginary >= 4.0 {
             return true;
         }
-        return false;
+        false
     }
 
     fn new(x: &f64, y: &f64) -> Complex {
@@ -45,7 +49,7 @@ impl Complex {
             real: *x,
             imaginary: *y,
        };
-       return new_complex;
+       new_complex
     }
 
     fn is_stable(&self) -> bool {
@@ -56,39 +60,94 @@ impl Complex {
             }
             copy.iterate(self);
         }
-        return true;
+        true
     }
 }
 
 fn main() {
-    let mut pixel_array: Vec<u8> = vec![b'0'; IMAGE_WIDTH * IMAGE_HEIGHT];
+    let mut image_slices = vec![];
 
-    let mut x = REAL_START;
-    let mut y = I_START;
+    let (tx, rx) = mpsc::channel();
 
-    let mut progress: f32 = 0.0;
-    let total: f32 = (IMAGE_WIDTH * IMAGE_HEIGHT) as f32;
+    let slice_height = IMAGE_HEIGHT / THREADS;
+    let slice_remainder = IMAGE_HEIGHT % THREADS;
 
-    for i in 0..IMAGE_HEIGHT {
-        for j in 0..IMAGE_WIDTH {
-            let point = Complex::new(&x, &y);
-            if point.is_stable() {
-                pixel_array[j + (i*IMAGE_WIDTH)] = b'1';
-            }
-            x += REAL_STEP;
+    let progress = Arc::new(Mutex::new(0.0 as f64));
+    let total: f64 = (IMAGE_WIDTH * IMAGE_HEIGHT) as f64;
 
-            progress += 1.0;
-            print!("Progress: {}%  \r", (progress / total * 100.0).round());
+    println!("Generating Image...");
+
+    for i in 0..THREADS {
+        let mut x = REAL_START;
+        let mut y = I_START - ((i * slice_height) as f64) * (I_STEP);
+
+        let this_height: usize;
+
+        if i != THREADS {
+            this_height = slice_height; 
+        } else {
+            this_height = slice_height + slice_remainder;
         }
-        y -= I_STEP;
-        x = REAL_START;
+
+        let my_progress = Arc::clone(&progress);
+        let txc = tx.clone();
+        thread::spawn(move || {
+            let thread_num = i;
+            let my_total = total;
+
+            let mut prog_counter = my_progress.lock().unwrap();
+
+            let mut this_slice = vec![b'0'; this_height * IMAGE_WIDTH];
+
+            for i in 0..this_height {
+                for j in 0..IMAGE_WIDTH {
+                    let point = Complex::new(&x, &y);
+                    if point.is_stable() {
+                        this_slice[j + (i*IMAGE_WIDTH)] = b'1';
+                    }
+                    x += REAL_STEP;
+
+                    *prog_counter += 1.0;
+                    print!("Progress: {}%      \r", (*prog_counter / my_total * 100.0).round());
+                }
+                x = REAL_START;
+                y -= I_STEP;
+            }
+            let message = (thread_num, this_slice);
+            txc.send(message).unwrap();
+        });
     }
-    print!("\nDone!\n");
+
+    let mut done_threads = 0;
+
+    while done_threads < THREADS {
+        match rx.try_recv() {
+            Ok( image_slice ) => {
+                done_threads += 1;
+                image_slices.push(image_slice);
+            }
+            Err(error) => if error == mpsc::TryRecvError::Disconnected {
+                println!("Main: Disconnected!");
+            }
+        }
+    }
+
+    println!("\nCombining...");
+
+    image_slices.sort_by_key(|k| k.0);
+
+    let mut final_image = vec![];
+    for mut slice in image_slices {
+        final_image.append(&mut slice.1); 
+    }
+
+    println!("Exporting...");
 
     let mut image_file = File::create("image.ppm").expect("Couldn't create or overwrite file!");
 
     let header = format!("P1\n{} {}\n", IMAGE_WIDTH, IMAGE_HEIGHT);
 
     image_file.write_all(header.as_bytes()).expect("Failed to output header");
-    image_file.write_all(&*pixel_array).expect("Failed to output image");
+
+    image_file.write_all(&final_image).expect("Failed to export image");
 }
