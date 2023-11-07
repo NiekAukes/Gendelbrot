@@ -1,20 +1,20 @@
 use std::fs::File;
 use std::io::prelude::*;
 use std::thread;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 
-const THREADS: usize = 3;
+const THREADS: usize = 5;
 
-const STABLE_ITERATIONS: i32 = 200;
+const STABLE_ITERATIONS: i32 = 300;
 
-const WIDTH: f64 = 4.0;
-const HEIGHT: f64 = 4.0;
+const WIDTH: f64 = 0.0005;
+const HEIGHT: f64 = 0.0005;
 
-const REAL_CENTER: f64 = 0.0;
-const I_CENTER: f64 = 0.0;
+const REAL_CENTER: f64 = -0.757;
+const I_CENTER: f64 = 0.0615;
 
-const IMAGE_WIDTH: usize = 6096;
-const IMAGE_HEIGHT: usize = 6096;
+const IMAGE_WIDTH: usize = 4096;
+const IMAGE_HEIGHT: usize = 4096;
 
 const REAL_START: f64 = -(WIDTH / 2.0) + REAL_CENTER;
 const I_START: f64 = HEIGHT/2.0 + I_CENTER;
@@ -68,12 +68,13 @@ fn main() {
     let mut image_slices = vec![];
 
     let (tx, rx) = mpsc::channel();
+    let (ptx, prx) = mpsc::channel();
 
     let slice_height = IMAGE_HEIGHT / THREADS;
     let slice_remainder = IMAGE_HEIGHT % THREADS;
 
-    let progress = Arc::new(Mutex::new(0.0 as f64));
-    let total: f64 = (IMAGE_WIDTH * IMAGE_HEIGHT) as f64;
+    let mut progress: f64 = 0.0;
+    let total: f64 = IMAGE_HEIGHT as f64;
 
     println!("Generating Image...");
 
@@ -89,13 +90,10 @@ fn main() {
             this_height = slice_height + slice_remainder;
         }
 
-        let my_progress = Arc::clone(&progress);
+        let ptxc = ptx.clone();
         let txc = tx.clone();
         thread::spawn(move || {
             let thread_num = i;
-            let my_total = total;
-
-            let mut prog_counter = my_progress.lock().unwrap();
 
             let mut this_slice = vec![b'0'; this_height * IMAGE_WIDTH];
 
@@ -107,11 +105,10 @@ fn main() {
                     }
                     x += REAL_STEP;
 
-                    *prog_counter += 1.0;
-                    print!("Progress: {}%      \r", (*prog_counter / my_total * 100.0).round());
                 }
                 x = REAL_START;
                 y -= I_STEP;
+                ptxc.send(1.0).unwrap();
             }
             let message = (thread_num, this_slice);
             txc.send(message).unwrap();
@@ -127,21 +124,26 @@ fn main() {
                 image_slices.push(image_slice);
             }
             Err(error) => if error == mpsc::TryRecvError::Disconnected {
-                println!("Main: Disconnected!");
+                println!("Main Disconnected!");
+            }
+        }
+        match prx.try_recv() {
+            Ok( inc ) => { 
+                progress += inc;
+                print!("Progress: {}%  \r", (progress / total * 100.0).round());
+            }
+            Err(error) => if error == mpsc::TryRecvError::Disconnected {
+                println!("Progress Counter Disconnected!");
             }
         }
     }
-
-    println!("\nCombining...");
-
+    print!("\n...");
     image_slices.sort_by_key(|k| k.0);
 
     let mut final_image = vec![];
     for mut slice in image_slices {
         final_image.append(&mut slice.1); 
     }
-
-    println!("Exporting...");
 
     let mut image_file = File::create("image.ppm").expect("Couldn't create or overwrite file!");
 
@@ -150,4 +152,6 @@ fn main() {
     image_file.write_all(header.as_bytes()).expect("Failed to output header");
 
     image_file.write_all(&final_image).expect("Failed to export image");
+
+    println!("\rDone.");
 }
