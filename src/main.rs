@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::thread;
 use std::sync::mpsc;
+use clap::Parser;
 
 const THREADS: usize = 5;
 
@@ -13,17 +14,38 @@ const HEIGHT: f64 = 3.0;
 const REAL_CENTER: f64 = -0.5;
 const I_CENTER: f64 = 0.0;
 
-// const IMAGE_WIDTH: usize = 1024;
-// const IMAGE_HEIGHT: usize = 1024;
+const IMAGE_WIDTH: usize = 1024;
+const IMAGE_HEIGHT: usize = 1024;
 
 const REAL_START: f64 = -(WIDTH / 2.0) + REAL_CENTER;
 const I_START: f64 = HEIGHT/2.0 + I_CENTER;
 
-// const REAL_STEP: f64 = WIDTH / (IMAGE_WIDTH as f64);
-// const I_STEP: f64 = HEIGHT / (IMAGE_HEIGHT as f64);
+const REAL_STEP: f64 = WIDTH / (IMAGE_WIDTH as f64);
+const I_STEP: f64 = HEIGHT / (IMAGE_HEIGHT as f64);
 
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = 1)]
+    threads: usize,
+
+    #[arg(short, long, default_value_t = 100)]
+    iterations: i32,
+
+    #[arg(short, long, default_values_t=[-0.5,0.0], num_args = 2, value_names=["x","y"])]
+    center: Vec<f64>,
+
+    #[arg(short, long, default_values_t=[3.0], num_args = 2, value_names=["width","height"])]
+    size: Vec<f64>,
+
+    #[arg(short='d', long, default_values_t=[1024], num_args = 2, value_names=["width","height"])]
+    image_size: Vec<usize>,
+
+    #[arg(short, long, help="Does not include file extension.", default_value = "mandelbrot")]
+    file: String,
+}
+
+#[derive(Debug, Clone)]
 struct Complex {
     real: f64,
     imaginary: f64,
@@ -64,6 +86,7 @@ impl Complex {
 }
 
 fn main() {
+    let args = Args::parse();
     let mut image_dim = 1;
 
     for i in 0..14 {
@@ -152,14 +175,14 @@ fn main() {
                 }
             }
         }
-        // print!("\n");
+
         image_slices.sort_by_key(|k| k.0);
 
         let mut final_image = vec![];
         for mut slice in image_slices {
             final_image.append(&mut slice.1); 
         }
-        let mut image_file = File::create(format!("images/image{:?}.ppm", i)).expect("Couldn't create or overwrite file!");
+        let mut image_file = File::create(format!("images/image{:?}.ppm", i+1)).expect("Couldn't create or overwrite file!");
 
         let header = format!("P1\n{} {}\n", image_dim, image_dim);
 
