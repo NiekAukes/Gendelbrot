@@ -1,81 +1,100 @@
-use std::fs::File;
+use clap::{crate_version, Parser};
+use std::fs::{DirBuilder, File};
 use std::io::prelude::*;
-use std::thread;
+use std::path::Path;
 use std::sync::mpsc;
-use clap::Parser;
+use std::thread;
 
-const THREADS: usize = 5;
+// Default number of threads to use
+const THREADS: usize = 1;
 
+// Default number of stable iterations (see Complex::is_stable below)
 const STABLE_ITERATIONS: i32 = 50;
 
-const WIDTH: f64 = 3.0;
-const HEIGHT: f64 = 3.0;
+// Default width and height of the image in mandelbrot space
+const RADIUS: f64 = 3.0;
 
+// Default real (x) and imaginary (y) center for the image in mandelbrot space
 const REAL_CENTER: f64 = -0.5;
 const I_CENTER: f64 = 0.0;
 
-const IMAGE_WIDTH: usize = 1024;
-const IMAGE_HEIGHT: usize = 1024;
+// The default width and height of the outputted image in pixels
+const IMAGE_DIM: usize = 1024;
 
-const REAL_START: f64 = -(WIDTH / 2.0) + REAL_CENTER;
-const I_START: f64 = HEIGHT/2.0 + I_CENTER;
+// The default name of the outputted image file without the file extension
+const IMAGE_NAME: &str = "mandelbrot";
 
-const REAL_STEP: f64 = WIDTH / (IMAGE_WIDTH as f64);
-const I_STEP: f64 = HEIGHT / (IMAGE_HEIGHT as f64);
-
+// The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version = crate_version!(), about = "A small, simplistic mandelbrot image generator.", long_about = None)]
 struct Args {
-    #[arg(short, long, default_value_t = 1)]
+    // Number of threads to use
+    #[arg(short, long, help = "The number of threads to calculate with", default_value_t = THREADS)]
     threads: usize,
 
-    #[arg(short, long, default_value_t = 100)]
+    // Number of stable iterations (see Complex::is_stable below)
+    #[arg(short, long, help = "Number of stable iterations", default_value_t = STABLE_ITERATIONS)]
     iterations: i32,
 
-    #[arg(short, long, default_values_t=[-0.5,0.0], num_args = 2, value_names=["x","y"])]
+    // The center of the image in mandelbrot space
+    #[arg(short, long, help = "The center of the image in mandelbrot space", default_values_t=[REAL_CENTER, I_CENTER], num_args = 2, value_names=["x","y"])]
     center: Vec<f64>,
 
-    #[arg(short, long, default_values_t=[3.0], num_args = 2, value_names=["width","height"])]
+    // The dimensions of the image in mandelbrot space
+    #[arg(short, long, help = "The dimensions of the image in mandelbrot space", default_values_t=[RADIUS, RADIUS], num_args = 2, value_names=["width","height"])]
     size: Vec<f64>,
 
-    #[arg(short='d', long, default_values_t=[1024], num_args = 2, value_names=["width","height"])]
+    // The dimensions of the image
+    #[arg(short='d', long, default_values_t=[IMAGE_DIM, IMAGE_DIM], num_args = 2, value_names=["width","height"])]
     image_size: Vec<usize>,
 
-    #[arg(short, long, help="Does not include file extension.", default_value = "mandelbrot")]
+    // The name of the image file without the extension
+    #[arg(short='o', long, help="Name of the outputted image file, does not include file extension.", default_value = IMAGE_NAME)]
     file: String,
 }
 
+// Simple struct for complex numbers
 #[derive(Debug, Clone)]
 struct Complex {
     real: f64,
     imaginary: f64,
 }
 
+// The functions below execute various calculations according to how a mandelbrot is generated,
+// a full description would take several paragraphs, so if you want a full explanation of what
+// is happening in the functions below, consider watching this video:
+// https://www.youtube.com/watch?v=FFftmWSzgmk
 impl Complex {
+    // Iterates the complex number once using the mandelbrot algorithm
     fn iterate(&mut self, origin: &Complex) {
         let copy = self.clone();
         self.real = (copy.real * copy.real) - (copy.imaginary * copy.imaginary) + origin.real;
         self.imaginary = (copy.real + copy.real) * copy.imaginary + origin.imaginary;
     }
 
+    // Checks to see if the complex number has gone past the escape radius
     fn has_escaped(&self) -> bool {
-        if self.real*self.real + self.imaginary*self.imaginary >= 4.0 {
+        if self.real * self.real + self.imaginary * self.imaginary >= 4.0 {
             return true;
         }
         false
     }
 
+    // Returns a new complex number
     fn new(x: &f64, y: &f64) -> Complex {
-       let new_complex = Complex {
+        Complex {
             real: *x,
             imaginary: *y,
-       };
-       new_complex
+        }
     }
 
-    fn is_stable(&self) -> bool {
+    // Runs the complete mandelbrot algorithm and returns whether this complex number
+    // is in the mandelbrot set. The complex number will be iterated a maximum of
+    // {stable_iterations} times before the algorithm decides it's in the mandelbrot set,
+    // assuming it doesn't escape before then.
+    fn is_stable(&self, stable_iterations: i32) -> bool {
         let mut copy: Complex = self.clone();
-        for _i in 0..STABLE_ITERATIONS {
+        for _i in 0..stable_iterations {
             if copy.has_escaped() {
                 return false;
             }
@@ -86,111 +105,175 @@ impl Complex {
 }
 
 fn main() {
+    // Parse the command line arguments and store the most commonly used ones in variables
     let args = Args::parse();
-    let mut image_dim = 1;
+    let image_width = args.image_size[0];
+    let image_height = args.image_size[1];
 
-    for i in 0..14 {
-        let real_step: f64 = WIDTH / (image_dim as f64);
-        let i_step: f64 = HEIGHT / (image_dim as f64);
+    let real_step: f64 = args.size[0] / (image_width as f64);
+    let i_step: f64 = args.size[1] / (image_height as f64);
 
-        let mut image_slices = vec![];
+    let real_start: f64 = -(args.size[0] / 2.0) + args.center[0];
+    let i_start: f64 = args.size[1] / 2.0 + args.center[1];
 
-        let (tx, rx) = mpsc::channel();
-        let (ptx, prx) = mpsc::channel();
+    let threads = args.threads;
 
-        let slice_height = image_dim / THREADS;
-        let slice_remainder = image_dim % THREADS;
+    // Initialize an array to hold a slice of the final image for each thread
+    let mut image_slices = vec![];
 
-        let mut progress: f64 = 0.0;
-        let total: f64 = image_dim as f64;
+    // Create two senders and recievers for thread communication,
+    // one for progress reports, and one to receive the completed image
+    // slice from a thread. (This method of completion isn't ideal, but this project
+    // was created before I knew about thread joining, possible TODO)
+    let (tx, rx) = mpsc::channel();
+    let (ptx, prx) = mpsc::channel();
 
-        println!("Generating Image {}...", i + 1);
+    // Split the image up into even vertical slices, accounting for any remaining height
+    let slice_height = image_height / threads;
+    let slice_remainder = image_height % threads;
 
-        for i in 0..THREADS {
-            let mut x = REAL_START;
-            let mut y = I_START - ((i * slice_height) as f64) * (i_step);
+    // Initalize the progress counter variables
+    let mut progress: f64 = 0.0;
+    let total: f64 = image_height as f64;
 
-            let mut this_height: usize;
+    println!("Generating Image...");
 
-            if i != THREADS-1 {
-                this_height = slice_height; 
-            } else {
-                this_height = slice_height + slice_remainder;
-            }
+    // Start spawning threads
+    for i in 0..threads {
+        // Set the initial x and y values for mandelbrot calculations to the
+        // top right corner of the image slice.
+        let mut x = real_start;
+        let mut y = i_start - ((i * slice_height) as f64) * (i_step);
 
-            if image_dim < THREADS {
-                this_height = image_dim;
-            }
+        // Set the variable for how many rows this thread has of the image, giving
+        // any remaining height to the last thread
+        let mut this_height: usize;
+        if i != threads - 1 {
+            this_height = slice_height;
+        } else {
+            this_height = slice_height + slice_remainder;
+        }
 
-            let ptxc = ptx.clone();
-            let txc = tx.clone();
-            thread::spawn(move || {
-                let thread_num = i;
+        // If there are more threads than there are rows, just give it all to one thread.
+        if image_height < threads {
+            this_height = image_height;
+        }
 
-                let mut this_slice = vec![b'0'; this_height * image_dim];
+        // Clone the senders and spawn the thread
+        let ptxc = ptx.clone();
+        let txc = tx.clone();
+        thread::spawn(move || {
+            let thread_num = i;
 
-                for i in 0..this_height {
-                    for j in 0..image_dim {
-                        let point = Complex::new(&x, &y);
-                        if point.is_stable() {
-                            this_slice[j + (i*image_dim)] = b'1';
-                        }
-                        x += real_step;
+            // Create a buffer to store the image slice in, initializing all pixels to white (0)
+            let mut this_slice = vec![b'0'; this_height * image_width];
+
+            // Iterate over the slice pixel by pixel.
+            for i in 0..this_height {
+                for j in 0..image_width {
+                    let point = Complex::new(&x, &y);
+                    // If this point is stable, draw a black pixel (1)
+                    if point.is_stable(args.iterations) {
+                        this_slice[j + (i * image_width)] = b'1';
                     }
-                    x = REAL_START;
-                    y -= i_step;
-                    ptxc.send(1.0).unwrap();
+                    x += real_step;
                 }
-                let message = (thread_num, this_slice);
-                txc.send(message).unwrap();
-            });
-            if image_dim < THREADS {
-                break;
+                x = real_start;
+                y -= i_step;
+                // Send a progress report for every row.
+                ptxc.send(1.0).unwrap();
             }
+
+            // Send the completed image slice to the main thread, along with this
+            // thread's number for re-ordering.
+            let message = (thread_num, this_slice);
+            txc.send(message).unwrap();
+        });
+
+        // In the case that there are more threads than rows in the image, cease
+        // spawning threads because we're giving it all to 1 thread.
+        if image_height < threads {
+            break;
         }
+    }
 
-        let mut done_threads = 0;
+    // Start keeping track of how many threads have completed their task.
+    // In the edge case that only 1 thread was created due to the row issue mentioned above,
+    // set the number of done threads to 1 less than the expected number of threads (which in
+    // reality is only 1)
+    let mut done_threads = 0;
+    if image_height < threads {
+        done_threads = threads - 1;
+    }
 
-        if image_dim < THREADS {
-            done_threads = THREADS - 1;        
-        }
-
-        while done_threads < THREADS {
-            match rx.try_recv() {
-                Ok( image_slice ) => {
-                    done_threads += 1;
-                    image_slices.push(image_slice);
-                }
-                Err(error) => if error == mpsc::TryRecvError::Disconnected {
+    // Wait for all threads to be done
+    while done_threads < threads {
+        // Receive messages from completed threads
+        match rx.try_recv() {
+            Ok(image_slice) => {
+                // Store the image slice from the thread and increment the thread counter
+                done_threads += 1;
+                image_slices.push(image_slice);
+            }
+            // Check for any disconnect errors
+            Err(error) => {
+                if error == mpsc::TryRecvError::Disconnected {
                     println!("Main Disconnected!");
                 }
             }
-            match prx.try_recv() {
-                Ok( inc ) => { 
-                    progress += inc;
-                    print!("Progress: {}%  \r", (progress / total * 100.0).round());
-                }
-                Err(error) => if error == mpsc::TryRecvError::Disconnected {
+        }
+        // Receive messages for the progress counter
+        match prx.try_recv() {
+            Ok(inc) => {
+                // Update the progress counter and report
+                progress += inc;
+                print!("Progress: {}%  \r", (progress / total * 100.0).round());
+            }
+            // Check for any disconnect errors
+            Err(error) => {
+                if error == mpsc::TryRecvError::Disconnected {
                     println!("Progress Counter Disconnected!");
                 }
             }
         }
-
-        image_slices.sort_by_key(|k| k.0);
-
-        let mut final_image = vec![];
-        for mut slice in image_slices {
-            final_image.append(&mut slice.1); 
-        }
-        let mut image_file = File::create(format!("images/image{:?}.ppm", i+1)).expect("Couldn't create or overwrite file!");
-
-        let header = format!("P1\n{} {}\n", image_dim, image_dim);
-
-        image_file.write_all(header.as_bytes()).expect("Failed to output header");
-
-        image_file.write_all(&final_image).expect("Failed to export image");
-        
-        image_dim *= 2;
     }
-    println!("\nDone.");
+
+    // Sort the image slices by thread number
+    image_slices.sort_by_key(|k| k.0);
+
+    // Join all of the image slices together
+    let mut final_image = vec![];
+    for mut slice in image_slices {
+        final_image.append(&mut slice.1);
+    }
+
+    let image_folder = Path::new("../images");
+    if !(image_folder.exists() && image_folder.is_dir()) {
+        DirBuilder::new()
+            .create(image_folder)
+            .expect("Failed to create image folder for output.");
+    }
+
+    let path_name = format!("../images/{}.ppm", args.file);
+    let image_path = Path::new(&path_name);
+
+    // Create the image file with the given name
+    let mut image_file = File::create(image_path).expect("Couldn't create or overwrite file!");
+
+    // The proper header format for .ppm files that are black and white only
+    let header = format!("P1\n{} {}\n", image_width, image_height);
+
+    // Write the header and image contents to the file
+    image_file
+        .write_all(header.as_bytes())
+        .expect("Failed to output header");
+    image_file
+        .write_all(&final_image)
+        .expect("Failed to export image");
+
+    // Done! (image files close automatically when dropped)
+    println!(
+        "\nDone. File outputted to {:?}",
+        image_path.canonicalize().unwrap()
+    );
 }
