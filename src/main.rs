@@ -22,8 +22,8 @@ const I_CENTER: f64 = 0.0;
 // The default width and height of the outputted image in pixels
 const IMAGE_DIM: usize = 1024;
 
-// The default name of the outputted image file without the file extension
-const IMAGE_NAME: &str = "mandelbrot";
+// The default name and file type of the outputted image file
+const IMAGE_NAME: &str = "mandelbrot.png";
 
 // The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
@@ -49,8 +49,8 @@ struct Args {
     #[arg(short='d', long, default_values_t=[IMAGE_DIM, IMAGE_DIM], num_args = 2, value_names=["width","height"])]
     image_size: Vec<usize>,
 
-    // The name of the image file without the extension
-    #[arg(short='o', long, help="Name of the outputted image file, does not include file extension.", default_value = IMAGE_NAME)]
+    // The name of the image file with the file extension
+    #[arg(short='o', long, help="Name of the outputted image file, must include a file extension.", long_help = "Name of the outputted image file, must include a file extension. (Only jpeg, png, ico, pnm, bmp, exr and tiff files are supported)", default_value = IMAGE_NAME)]
     file: String,
 }
 
@@ -249,10 +249,9 @@ fn main() {
     }
 
     // Create the image file with the given name
-    let path_name = format!("{}.png", args.file);
-    let image_path = Path::new(&path_name);
+    let image_path = Path::new(&args.file);
 
-    // Write the image contents to a png file
+    // Write the image contents to a file (format automatically deduced from filename)
     image::save_buffer(
         image_path,
         &final_image,
@@ -265,6 +264,6 @@ fn main() {
     // Done! (image files close automatically when dropped)
     println!(
         "\nDone. File outputted to {:?}",
-        image_path.canonicalize().unwrap()
+        dunce::canonicalize(Path::new(&args.file)).unwrap()
     );
 }
