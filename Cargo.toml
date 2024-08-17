@@ -1,7 +1,13 @@
 [package]
-name = "gendel"
+name = "gendelbrot"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A small, simplistic mandelbrot image generator."
+repository = "https://github.com/JohnTWilkinson/Gendelbrot"
+readme = "README.md"
+categories = ["command-line-utilities", "mathematics", "rendering"]
+keywords = ["command-line", "mandelbrot", "generator"]
 
 [dependencies]
-clap = { version = "4.5.15", features = ["derive"] }
+clap = { version = "4.5.15", features = ["cargo", "derive"] }
