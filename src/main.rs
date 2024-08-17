@@ -1,7 +1,7 @@
-use clap::Parser;
-use std::fs::{self, DirBuilder, File};
+use clap::{crate_version, Parser};
+use std::fs::{DirBuilder, File};
 use std::io::prelude::*;
-use std::path::{self, Path};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
@@ -26,22 +26,22 @@ const IMAGE_NAME: &str = "mandelbrot";
 
 // The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version = crate_version!(), about = "A small, simplistic mandelbrot image generator.", long_about = None)]
 struct Args {
     // Number of threads to use
-    #[arg(short, long, default_value_t = THREADS)]
+    #[arg(short, long, help = "The number of threads to calculate with", default_value_t = THREADS)]
     threads: usize,
 
     // Number of stable iterations (see Complex::is_stable below)
-    #[arg(short, long, default_value_t = STABLE_ITERATIONS)]
+    #[arg(short, long, help = "Number of stable iterations", default_value_t = STABLE_ITERATIONS)]
     iterations: i32,
 
     // The center of the image in mandelbrot space
-    #[arg(short, long, default_values_t=[REAL_CENTER, I_CENTER], num_args = 2, value_names=["x","y"])]
+    #[arg(short, long, help = "The center of the image in mandelbrot space", default_values_t=[REAL_CENTER, I_CENTER], num_args = 2, value_names=["x","y"])]
     center: Vec<f64>,
 
     // The dimensions of the image in mandelbrot space
-    #[arg(short, long, default_values_t=[RADIUS, RADIUS], num_args = 2, value_names=["width","height"])]
+    #[arg(short, long, help = "The dimensions of the image in mandelbrot space", default_values_t=[RADIUS, RADIUS], num_args = 2, value_names=["width","height"])]
     size: Vec<f64>,
 
     // The dimensions of the image
@@ -49,7 +49,7 @@ struct Args {
     image_size: Vec<usize>,
 
     // The name of the image file without the extension
-    #[arg(short='o', long, help="Does not include file extension.", default_value = IMAGE_NAME)]
+    #[arg(short='o', long, help="Name of the outputted image file, does not include file extension.", default_value = IMAGE_NAME)]
     file: String,
 }
 
@@ -249,7 +249,7 @@ fn main() {
 
     let image_folder = Path::new("../images");
     if !(image_folder.exists() && image_folder.is_dir()) {
-        let builder = DirBuilder::new()
+        DirBuilder::new()
             .create(image_folder)
             .expect("Failed to create image folder for output.");
     }
