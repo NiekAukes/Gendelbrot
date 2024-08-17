@@ -1,5 +1,5 @@
 use clap::{crate_version, Parser};
-use std::fs::{DirBuilder, File};
+use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 use std::sync::mpsc;
@@ -247,17 +247,9 @@ fn main() {
         final_image.append(&mut slice.1);
     }
 
-    let image_folder = Path::new("../images");
-    if !(image_folder.exists() && image_folder.is_dir()) {
-        DirBuilder::new()
-            .create(image_folder)
-            .expect("Failed to create image folder for output.");
-    }
-
-    let path_name = format!("../images/{}.ppm", args.file);
-    let image_path = Path::new(&path_name);
-
     // Create the image file with the given name
+    let path_name = format!("{}.ppm", args.file);
+    let image_path = Path::new(&path_name);
     let mut image_file = File::create(image_path).expect("Couldn't create or overwrite file!");
 
     // The proper header format for .ppm files that are black and white only
