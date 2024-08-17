@@ -11,3 +11,4 @@ keywords = ["command-line", "mandelbrot", "generator"]
 
 [dependencies]
 clap = { version = "4.5.15", features = ["cargo", "derive"] }
+image = "0.25.2"

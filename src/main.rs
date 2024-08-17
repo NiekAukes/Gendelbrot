@@ -1,6 +1,7 @@
 use clap::{crate_version, Parser};
-use std::fs::File;
-use std::io::prelude::*;
+use image::{ColorType, ExtendedColorType, ImageBuffer, Luma};
+// use std::fs::File;
+// use std::io::prelude::*;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -166,7 +167,7 @@ fn main() {
             let thread_num = i;
 
             // Create a buffer to store the image slice in, initializing all pixels to white (0)
-            let mut this_slice = vec![b'0'; this_height * image_width];
+            let mut this_slice = vec![u8::MAX; this_height * image_width];
 
             // Iterate over the slice pixel by pixel.
             for i in 0..this_height {
@@ -174,7 +175,7 @@ fn main() {
                     let point = Complex::new(&x, &y);
                     // If this point is stable, draw a black pixel (1)
                     if point.is_stable(args.iterations) {
-                        this_slice[j + (i * image_width)] = b'1';
+                        this_slice[j + (i * image_width)] = 0;
                     }
                     x += real_step;
                 }
@@ -248,20 +249,30 @@ fn main() {
     }
 
     // Create the image file with the given name
-    let path_name = format!("{}.ppm", args.file);
+    let path_name = format!("{}.png", args.file);
     let image_path = Path::new(&path_name);
-    let mut image_file = File::create(image_path).expect("Couldn't create or overwrite file!");
 
-    // The proper header format for .ppm files that are black and white only
-    let header = format!("P1\n{} {}\n", image_width, image_height);
+    image::save_buffer(
+        image_path,
+        &final_image,
+        image_width as u32,
+        image_height as u32,
+        ColorType::L8,
+    )
+    .expect("Couldn't create or overwrite file!");
 
-    // Write the header and image contents to the file
-    image_file
-        .write_all(header.as_bytes())
-        .expect("Failed to output header");
-    image_file
-        .write_all(&final_image)
-        .expect("Failed to export image");
+    // let mut image_file = File::create(image_path).expect("Couldn't create or overwrite file!");
+
+    // // The proper header format for .ppm files that are black and white only
+    // let header = format!("P1\n{} {}\n", image_width, image_height);
+
+    // // Write the header and image contents to the file
+    // image_file
+    //     .write_all(header.as_bytes())
+    //     .expect("Failed to output header");
+    // image_file
+    //     .write_all(&final_image)
+    //     .expect("Failed to export image");
 
     // Done! (image files close automatically when dropped)
     println!(
