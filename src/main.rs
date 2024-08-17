@@ -1,5 +1,5 @@
 use clap::{crate_version, Parser};
-use image::{ColorType, ExtendedColorType, ImageBuffer, Luma};
+use image::ColorType;
 // use std::fs::File;
 // use std::io::prelude::*;
 use std::path::Path;
@@ -252,6 +252,7 @@ fn main() {
     let path_name = format!("{}.png", args.file);
     let image_path = Path::new(&path_name);
 
+    // Write the image contents to a png file
     image::save_buffer(
         image_path,
         &final_image,
@@ -260,19 +261,6 @@ fn main() {
         ColorType::L8,
     )
     .expect("Couldn't create or overwrite file!");
-
-    // let mut image_file = File::create(image_path).expect("Couldn't create or overwrite file!");
-
-    // // The proper header format for .ppm files that are black and white only
-    // let header = format!("P1\n{} {}\n", image_width, image_height);
-
-    // // Write the header and image contents to the file
-    // image_file
-    //     .write_all(header.as_bytes())
-    //     .expect("Failed to output header");
-    // image_file
-    //     .write_all(&final_image)
-    //     .expect("Failed to export image");
 
     // Done! (image files close automatically when dropped)
     println!(
