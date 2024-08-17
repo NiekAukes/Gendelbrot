@@ -24,8 +24,6 @@ const IMAGE_DIM: usize = 1024;
 // The default name of the outputted image file without the file extension
 const IMAGE_NAME: &str = "mandelbrot";
 
-// test
-
 // The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
 #[command(version = crate_version!(), about = "A small, simplistic mandelbrot image generator.", long_about = None)]
