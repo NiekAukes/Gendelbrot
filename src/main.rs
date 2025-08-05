@@ -1,3 +1,4 @@
+#![engine(cuda::engine)]
 use clap::{crate_version, Parser};
 use image::ColorType;
 // use std::fs::File;
@@ -5,6 +6,9 @@ use image::ColorType;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
+
+use cuda::gpu;
+use cuda::dmem::Buffer;
 
 // Default number of threads to use
 const THREADS: usize = 1;
@@ -52,6 +56,10 @@ struct Args {
     // The name of the image file with the file extension
     #[arg(short='o', long, help="Name of the outputted image file, must include a file extension.", long_help = "Name of the outputted image file, must include a file extension. (Only jpeg, png, ico, pnm, bmp, exr and tiff files are supported)", default_value = IMAGE_NAME)]
     file: String,
+
+    // Whether to use the GPU implementation instead of the CPU
+    #[arg(long, help = "Use the GPU implementation instead of the CPU implementation", long_help = "Use the GPU implementation instead of the CPU implementation. This will be much faster, but requires a CUDA compatible GPU and the nvvm and nvjitlink crates to be installed.", default_value_t = false)]
+    gpu: bool,
 }
 
 // Simple struct for complex numbers
@@ -105,6 +113,45 @@ impl Complex {
     }
 }
 
+
+
+#[kernel]
+fn compute_mandelbrot(
+    mut image: Buffer<u8>,
+    image_width: usize,
+    image_height: usize,
+    real_start: f64,
+    i_start: f64,
+    real_step: f64,
+    i_step: f64,
+) {
+    let pos = gpu::global_tid_x() as usize;
+    let i = pos / image_width;
+    let j = pos % image_width;
+
+    if i >= image_height {
+        return; // Out of bounds
+    }
+    
+    // compute x and y coordinates in mandelbrot space
+    let x = real_start + (j as f64 * real_step);
+    let y = i_start - (i as f64 * i_step);
+
+    // Create a complex number from the x and y coordinates
+    let point = Complex::new(&x, &y);
+    // If the point is stable, set the pixel to black (1), otherwise leave it white (0)
+    if point.is_stable(STABLE_ITERATIONS) {
+        image.set(i * image_width + j, 0); // Set pixel to black
+    } else {
+        image.set(i * image_width + j, u8::MAX); // Leave pixel white
+    }
+
+    
+
+    // report progress TODO
+}
+
+
 fn main() {
     // Parse the command line arguments and store the most commonly used ones in variables
     let args = Args::parse();
@@ -119,8 +166,9 @@ fn main() {
 
     let threads = args.threads;
 
+    
     // Initialize an array to hold a slice of the final image for each thread
-    let mut image_slices = vec![];
+    let mut image_slices: Vec<(usize, Vec<u8>)> = vec![];
 
     // Create two senders and recievers for thread communication,
     // one for progress reports, and one to receive the completed image
@@ -140,113 +188,142 @@ fn main() {
     println!("Generating Image...");
 
     // Start spawning threads
-    for i in 0..threads {
-        // Set the initial x and y values for mandelbrot calculations to the
-        // top right corner of the image slice.
-        let mut x = real_start;
-        let mut y = i_start - ((i * slice_height) as f64) * (i_step);
+    let final_image: Vec<u8> = if args.gpu {
+        let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
+        let threads_per_block = 256;
+        let blocks = (image_width * image_height + threads_per_block - 1) / threads_per_block;
+        match compute_mandelbrot.launch(
+            blocks as usize,
+            threads_per_block as usize,
 
-        // Set the variable for how many rows this thread has of the image, giving
-        // any remaining height to the last thread
-        let mut this_height: usize;
-        if i != threads - 1 {
-            this_height = slice_height;
-        } else {
-            this_height = slice_height + slice_remainder;
+            image_buffer,
+            image_width,
+            image_height,
+            real_start,
+            i_start,
+            real_step,
+            i_step,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error launching kernel: {:?}", e);
+            }
         }
 
-        // If there are more threads than there are rows, just give it all to one thread.
-        if image_height < threads {
-            this_height = image_height;
-        }
+        let result: Vec<u8> = image_buffer.retrieve().unwrap();
 
-        // Clone the senders and spawn the thread
-        let ptxc = ptx.clone();
-        let txc = tx.clone();
-        thread::spawn(move || {
-            let thread_num = i;
+        result
+    } else {
+        for i in 0..threads {
+            // Set the initial x and y values for mandelbrot calculations to the
+            // top right corner of the image slice.
+            let mut x = real_start;
+            let mut y = i_start - ((i * slice_height) as f64) * (i_step);
 
-            // Create a buffer to store the image slice in, initializing all pixels to white (0)
-            let mut this_slice = vec![u8::MAX; this_height * image_width];
+            // Set the variable for how many rows this thread has of the image, giving
+            // any remaining height to the last thread
+            let mut this_height: usize;
+            if i != threads - 1 {
+                this_height = slice_height;
+            } else {
+                this_height = slice_height + slice_remainder;
+            }
 
-            // Iterate over the slice pixel by pixel.
-            for i in 0..this_height {
-                for j in 0..image_width {
-                    let point = Complex::new(&x, &y);
-                    // If this point is stable, draw a black pixel (1)
-                    if point.is_stable(args.iterations) {
-                        this_slice[j + (i * image_width)] = 0;
+            // If there are more threads than there are rows, just give it all to one thread.
+            if image_height < threads {
+                this_height = image_height;
+            }
+
+            // Clone the senders and spawn the thread
+            let ptxc = ptx.clone();
+            let txc = tx.clone();
+            thread::spawn(move || {
+                let thread_num = i;
+
+                // Create a buffer to store the image slice in, initializing all pixels to white (0)
+                let mut this_slice = vec![u8::MAX; this_height * image_width];
+
+                // Iterate over the slice pixel by pixel.
+                for i in 0..this_height {
+                    for j in 0..image_width {
+                        let point = Complex::new(&x, &y);
+                        // If this point is stable, draw a black pixel (1)
+                        if point.is_stable(args.iterations) {
+                            this_slice[j + (i * image_width)] = 0;
+                        }
+                        x += real_step;
                     }
-                    x += real_step;
+                    x = real_start;
+                    y -= i_step;
+                    // Send a progress report for every row.
+                    ptxc.send(1.0).unwrap();
                 }
-                x = real_start;
-                y -= i_step;
-                // Send a progress report for every row.
-                ptxc.send(1.0).unwrap();
+
+                // Send the completed image slice to the main thread, along with this
+                // thread's number for re-ordering.
+                let message = (thread_num, this_slice);
+                txc.send(message).unwrap();
+            });
+
+            // In the case that there are more threads than rows in the image, cease
+            // spawning threads because we're giving it all to 1 thread.
+            if image_height < threads {
+                break;
             }
-
-            // Send the completed image slice to the main thread, along with this
-            // thread's number for re-ordering.
-            let message = (thread_num, this_slice);
-            txc.send(message).unwrap();
-        });
-
-        // In the case that there are more threads than rows in the image, cease
-        // spawning threads because we're giving it all to 1 thread.
+        }
+        // Start keeping track of how many threads have completed their task.
+        // In the edge case that only 1 thread was created due to the row issue mentioned above,
+        // set the number of done threads to 1 less than the expected number of threads (which in
+        // reality is only 1)
+        let mut done_threads = 0;
         if image_height < threads {
-            break;
+            done_threads = threads - 1;
         }
-    }
 
-    // Start keeping track of how many threads have completed their task.
-    // In the edge case that only 1 thread was created due to the row issue mentioned above,
-    // set the number of done threads to 1 less than the expected number of threads (which in
-    // reality is only 1)
-    let mut done_threads = 0;
-    if image_height < threads {
-        done_threads = threads - 1;
-    }
-
-    // Wait for all threads to be done
-    while done_threads < threads {
-        // Receive messages from completed threads
-        match rx.try_recv() {
-            Ok(image_slice) => {
-                // Store the image slice from the thread and increment the thread counter
-                done_threads += 1;
-                image_slices.push(image_slice);
+        // Wait for all threads to be done
+        while done_threads < threads {
+            // Receive messages from completed threads
+            match rx.try_recv() {
+                Ok(image_slice) => {
+                    // Store the image slice from the thread and increment the thread counter
+                    done_threads += 1;
+                    image_slices.push(image_slice);
+                }
+                // Check for any disconnect errors
+                Err(error) => {
+                    if error == mpsc::TryRecvError::Disconnected {
+                        println!("Main Disconnected!");
+                    }
+                }
             }
-            // Check for any disconnect errors
-            Err(error) => {
-                if error == mpsc::TryRecvError::Disconnected {
-                    println!("Main Disconnected!");
+            // Receive messages for the progress counter
+            match prx.try_recv() {
+                Ok(inc) => {
+                    // Update the progress counter and report
+                    progress += inc;
+                    print!("Progress: {}%  \r", (progress / total * 100.0).round());
+                }
+                // Check for any disconnect errors
+                Err(error) => {
+                    if error == mpsc::TryRecvError::Disconnected {
+                        println!("Progress Counter Disconnected!");
+                    }
                 }
             }
         }
-        // Receive messages for the progress counter
-        match prx.try_recv() {
-            Ok(inc) => {
-                // Update the progress counter and report
-                progress += inc;
-                print!("Progress: {}%  \r", (progress / total * 100.0).round());
-            }
-            // Check for any disconnect errors
-            Err(error) => {
-                if error == mpsc::TryRecvError::Disconnected {
-                    println!("Progress Counter Disconnected!");
-                }
-            }
+
+        // Sort the image slices by thread number
+        image_slices.sort_by_key(|k| k.0);
+
+        // Join all of the image slices together
+        let mut final_image = vec![];
+        for mut slice in image_slices {
+            final_image.append(&mut slice.1);
         }
-    }
+        final_image
+    };
 
-    // Sort the image slices by thread number
-    image_slices.sort_by_key(|k| k.0);
-
-    // Join all of the image slices together
-    let mut final_image = vec![];
-    for mut slice in image_slices {
-        final_image.append(&mut slice.1);
-    }
+    
 
     // Create the image file with the given name
     let image_path = Path::new(&args.file);
