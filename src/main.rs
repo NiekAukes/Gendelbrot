@@ -1,9 +1,7 @@
 #![engine(cuda::engine)]
 #![feature(lang_items)]
 use clap::{crate_version, Parser};
-use cuda::atom::{AtomI32, Atomic, Shared};
 use image::ColorType;
-use core::panic::PanicInfo;
 use std::io::Write;
 // use std::fs::File;
 // use std::io::prelude::*;
@@ -11,10 +9,8 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use std::arch::asm;
-
 use cuda::gpu;
-use cuda::dmem::Buffer;
+use cuda::dmem::{Buffer, DSend};
 
 
 // Default number of threads to use
@@ -36,26 +32,6 @@ const IMAGE_DIM: usize = 1024;
 // The default name and file type of the outputted image file
 const IMAGE_NAME: &str = "mandelbrot.png";
 
-#[lang = "kernel_panic_impl"]
-#[no_mangle]
-fn kernel_panic_impl(info: &PanicInfo) -> ! {
-    unsafe { crate::gpu::__trap(); }
-    loop {}
-}
-
-#[lang = "kernel_panic_fmt_impl"]
-#[no_mangle]
-fn kernel_panic_fmt_impl(info: &PanicInfo) -> ! {
-    unsafe { crate::gpu::__trap(); }
-    loop {}
-}
-
-#[lang = "kernel_panic_nounwind_impl"]
-#[no_mangle]
-fn kernel_panic_nounwind_impl(expr: &'static str) -> ! {
-    unsafe { crate::gpu::__trap(); }
-    loop {}
-}
 
 // The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
@@ -145,20 +121,25 @@ impl Complex {
 #[kernel]
 fn compute_mandelbrot(
     mut image: Buffer<u8>,
+    offset: usize,
     image_width: usize,
     image_height: usize,
     real_start: f64,
     i_start: f64,
     real_step: f64,
     i_step: f64,
+    //mut progress: Shared<AtomI32>,
 ) {
-    let pos = gpu::global_tid_x() as usize;
+    let pos = offset + gpu::global_tid_x() as usize;
     let i = pos / image_width;
     let j = pos % image_width;
 
     if i >= image_height {
         return; // Out of bounds
     }
+
+    // sync to ensure we can use warp optimizations
+    gpu::syncthreads();
     
     // compute x and y coordinates in mandelbrot space
     let x = real_start + (j as f64 * real_step);
@@ -172,9 +153,6 @@ fn compute_mandelbrot(
     } else {
         image.set(i * image_width + j, u8::MAX); // Leave pixel white
     }
-   
-
-    // report progress TODO
 }
 
 
@@ -214,40 +192,66 @@ fn main() {
     let total: f64 = image_height as f64;
 
     println!("Generating Image...");
-    //ptxtest();
     // Start spawning threads
     let final_image: Vec<u8> = if args.gpu {
+        let total = image_width * image_height;
 
         let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
         let threads_per_block = 256;
         let blocks = (image_width * image_height + threads_per_block - 1) / threads_per_block;
         println!("launch args: {}, {}, buf, {}, {}, {}, {}, {}, {}",
             blocks, threads_per_block, image_width, image_height, real_start, i_start, real_step, i_step);
-        match compute_mandelbrot.launch(
-            //blocks as usize,
-            threads_per_block as usize,
-            blocks as usize,
-            image_buffer,
-            image_width,
-            image_height,
-            real_start,
-            i_start,
-            real_step,
-            i_step,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Error launching kernel: {:?}", e);
-            }
-        }
+
+        // convert arguments to dptr
+        let mut image_buffer_d = image_buffer.to_device().unwrap();
+        let mut image_width_d = image_width.to_device().unwrap();
+        let mut image_height_d = image_height.to_device().unwrap();
+        let mut real_start_d = real_start.to_device().unwrap();
+        let mut i_start_d = i_start.to_device().unwrap();
+        let mut real_step_d = real_step.to_device().unwrap();
+        let mut i_step_d = i_step.to_device().unwrap();
+        
 
         println!("Waiting for GPU to finish...");
 
+        // step is calculated based on how many pixels we want to generate at a time
+        let blocks_per_step = (total as f64 / threads_per_block as f64 / 100.0).ceil() as usize;
+        let offset_step = threads_per_block * blocks_per_step;
         
+        let mut offset = 0;
+        while offset < total as usize {
+            // generate chucks of the mandelbrot set
+            let mut offset_d = offset.to_device().unwrap();
+            
+            match compute_mandelbrot.launch_with_dptr(
+                threads_per_block as usize,
+                blocks_per_step as usize,
+                &mut image_buffer_d,
+                &mut offset_d,
+                &mut image_width_d,
+                &mut image_height_d,
+                &mut real_start_d,
+                &mut i_start_d,
+                &mut real_step_d,
+                &mut i_step_d,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error launching kernel: {:?}", e);
+                    return;
+                }
+            }
+            offset += offset_step;
+            
+            print!("Progress: {}%  \r", (offset as f64 / total as f64 * 100.0).round());
+            // Flush the output to ensure the progress is displayed
+            std::io::stdout().flush().unwrap();
+            cuda::device_sync().unwrap();
+        }
 
         let result: Vec<u8> = image_buffer.retrieve().unwrap();
 
-        println!("Image generated using GPU.");
+        println!("\nImage generated using GPU.");
         result
     } else {
         for i in 0..threads {
