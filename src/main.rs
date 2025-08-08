@@ -1,20 +1,27 @@
 #![engine(cuda::engine)]
+#![feature(lang_items)]
 use clap::{crate_version, Parser};
+use cuda::atom::{AtomI32, Atomic, Shared};
 use image::ColorType;
+use core::panic::PanicInfo;
+use std::io::Write;
 // use std::fs::File;
 // use std::io::prelude::*;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
+use std::arch::asm;
+
 use cuda::gpu;
 use cuda::dmem::Buffer;
+
 
 // Default number of threads to use
 const THREADS: usize = 1;
 
 // Default number of stable iterations (see Complex::is_stable below)
-const STABLE_ITERATIONS: i32 = 50;
+const STABLE_ITERATIONS: i32 = 500;
 
 // Default width and height of the image in mandelbrot space
 const RADIUS: f64 = 3.0;
@@ -28,6 +35,27 @@ const IMAGE_DIM: usize = 1024;
 
 // The default name and file type of the outputted image file
 const IMAGE_NAME: &str = "mandelbrot.png";
+
+#[lang = "kernel_panic_impl"]
+#[no_mangle]
+fn kernel_panic_impl(info: &PanicInfo) -> ! {
+    unsafe { crate::gpu::__trap(); }
+    loop {}
+}
+
+#[lang = "kernel_panic_fmt_impl"]
+#[no_mangle]
+fn kernel_panic_fmt_impl(info: &PanicInfo) -> ! {
+    unsafe { crate::gpu::__trap(); }
+    loop {}
+}
+
+#[lang = "kernel_panic_nounwind_impl"]
+#[no_mangle]
+fn kernel_panic_nounwind_impl(expr: &'static str) -> ! {
+    unsafe { crate::gpu::__trap(); }
+    loop {}
+}
 
 // The command line arguments Gendel accepts
 #[derive(Parser, Debug)]
@@ -114,7 +142,6 @@ impl Complex {
 }
 
 
-
 #[kernel]
 fn compute_mandelbrot(
     mut image: Buffer<u8>,
@@ -139,14 +166,13 @@ fn compute_mandelbrot(
 
     // Create a complex number from the x and y coordinates
     let point = Complex::new(&x, &y);
-    // If the point is stable, set the pixel to black (1), otherwise leave it white (0)
+    //If the point is stable, set the pixel to black (1), otherwise leave it white (0)
     if point.is_stable(STABLE_ITERATIONS) {
         image.set(i * image_width + j, 0); // Set pixel to black
     } else {
         image.set(i * image_width + j, u8::MAX); // Leave pixel white
     }
-
-    
+   
 
     // report progress TODO
 }
@@ -157,6 +183,8 @@ fn main() {
     let args = Args::parse();
     let image_width = args.image_size[0];
     let image_height = args.image_size[1];
+
+    println!("image width: {}, image height: {}", image_width, image_height);
 
     let real_step: f64 = args.size[0] / (image_width as f64);
     let i_step: f64 = args.size[1] / (image_height as f64);
@@ -186,16 +214,19 @@ fn main() {
     let total: f64 = image_height as f64;
 
     println!("Generating Image...");
-
+    //ptxtest();
     // Start spawning threads
     let final_image: Vec<u8> = if args.gpu {
+
         let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
         let threads_per_block = 256;
         let blocks = (image_width * image_height + threads_per_block - 1) / threads_per_block;
+        println!("launch args: {}, {}, buf, {}, {}, {}, {}, {}, {}",
+            blocks, threads_per_block, image_width, image_height, real_start, i_start, real_step, i_step);
         match compute_mandelbrot.launch(
-            blocks as usize,
+            //blocks as usize,
             threads_per_block as usize,
-
+            blocks as usize,
             image_buffer,
             image_width,
             image_height,
@@ -210,8 +241,13 @@ fn main() {
             }
         }
 
+        println!("Waiting for GPU to finish...");
+
+        
+
         let result: Vec<u8> = image_buffer.retrieve().unwrap();
 
+        println!("Image generated using GPU.");
         result
     } else {
         for i in 0..threads {
