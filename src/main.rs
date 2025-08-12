@@ -1,9 +1,10 @@
 #![engine(cuda::engine)]
 
 use clap::{crate_version, Parser};
-use cuda::dmem::Buffer;
+use cuda::dmem::{Buffer, DSend};
 use cuda::gpu;
 use image::ColorType;
+use std::io::Write;
 // use std::fs::File;
 // use std::io::prelude::*;
 use std::path::Path;
@@ -164,7 +165,7 @@ fn main() {
         iterations: args.iterations,
     };
     let final_image = if args.gpu {
-        build_mandelbrot_gpu_simple(&options)
+        build_mandelbrot_gpu(&options)
     } else {
         // If the GPU is not used, use the CPU version
         build_mandelbrot_cpu(&options)
@@ -374,6 +375,7 @@ pub fn build_mandelbrot_cpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
 #[kernel]
 fn mandelbrot_kernel(
     mut image: Buffer<u8>,
+    offset: usize,
     image_width: usize,
     image_height: usize,
     real_start: f64,
@@ -382,7 +384,7 @@ fn mandelbrot_kernel(
     i_step: f64,
     iterations: i32,
 ) {
-    let pos = gpu::global_tid_x() as usize;
+    let pos = offset + gpu::global_tid_x() as usize;
     let i = pos / image_width;
     let j = pos % image_width;
 
@@ -426,6 +428,7 @@ pub fn build_mandelbrot_gpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
         threads_per_block as usize,
         blocks as usize,
         image_buffer,
+        0,
         image_width,
         image_height,
         real_start,
@@ -441,6 +444,85 @@ pub fn build_mandelbrot_gpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
     }
 
     println!("Waiting for GPU to finish...");
+    let result: Vec<u8> = image_buffer.retrieve().unwrap();
+    result
+}
+
+
+pub fn build_mandelbrot_gpu(options: &MandelbrotCpu) -> Vec<u8> {
+    let MandelbrotCpu {
+        image_width,
+        image_height,
+        real_step,
+        i_step,
+        real_start,
+        i_start,
+        iterations,
+        ..
+    } = *options;
+
+    let total = image_width * image_height;
+
+    let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
+    let threads_per_block = 256;
+
+    // convert arguments to dptr
+    let mut image_buffer_d = image_buffer.to_device().unwrap();
+    let mut image_width_d = image_width.to_device().unwrap();
+    let mut image_height_d = image_height.to_device().unwrap();
+    let mut real_start_d = real_start.to_device().unwrap();
+    let mut i_start_d = i_start.to_device().unwrap();
+    let mut real_step_d = real_step.to_device().unwrap();
+    let mut i_step_d = i_step.to_device().unwrap();
+    let mut iterations = iterations.to_device().unwrap();
+
+    // step is calculated based on how many pixels we want to generate at a time
+    let blocks_per_step = (total as f64 / threads_per_block as f64 / 100.0).ceil() as usize;
+    let offset_step = threads_per_block * blocks_per_step;
+    
+    let mut offset = 0;
+    while offset < total as usize {
+        // generate chucks of the mandelbrot set
+        let mut offset_d = offset.to_device().unwrap();
+        
+        match mandelbrot_kernel.launch_with_dptr(
+            threads_per_block as usize,
+            blocks_per_step as usize,
+            &mut image_buffer_d,
+            &mut offset_d,
+            &mut image_width_d,
+            &mut image_height_d,
+            &mut real_start_d,
+            &mut i_start_d,
+            &mut real_step_d,
+            &mut i_step_d,
+            &mut iterations,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                panic!("Error launching kernel: {:?}", e);
+            }
+        }
+        offset += offset_step;
+        
+        print!("Progress: {}%  \r", (offset as f64 / total as f64 * 100.0).round());
+        // Flush the output to ensure the progress is displayed
+        std::io::stdout().flush().unwrap();
+
+        if offset == offset_step {
+            // Sleep for a short time to allow the GPU to catch up
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // sync the device to ensure the kernel has finished executing
+        cuda::device_sync().unwrap();
+    }
+
+    // calculate how much data needs to be retrieved in mb
+    let data_size = image_width * image_height;
+    println!("\nRetrieving image of {:.2} MB", data_size as f64 / (1024.0 * 1024.0));
+
+
     let result: Vec<u8> = image_buffer.retrieve().unwrap();
     result
 }
