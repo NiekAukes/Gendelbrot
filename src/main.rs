@@ -6,6 +6,8 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
+mod tests;
+
 // Default number of threads to use
 const THREADS: usize = 1;
 
@@ -56,7 +58,7 @@ struct Args {
 
 // Simple struct for complex numbers
 #[derive(Debug, Clone)]
-struct Complex {
+pub struct Complex {
     real: f64,
     imaginary: f64,
 }
@@ -75,17 +77,14 @@ impl Complex {
 
     // Checks to see if the complex number has gone past the escape radius
     fn has_escaped(&self) -> bool {
-        if self.real * self.real + self.imaginary * self.imaginary >= 4.0 {
-            return true;
-        }
-        false
+        self.real * self.real + self.imaginary * self.imaginary >= 4.0 
     }
 
     // Returns a new complex number
-    fn new(x: &f64, y: &f64) -> Complex {
+    fn new(x: f64, y: f64) -> Complex {
         Complex {
-            real: *x,
-            imaginary: *y,
+            real: x,
+            imaginary: y,
         }
     }
 
@@ -105,7 +104,7 @@ impl Complex {
     }
 }
 
-struct MandelbrotCpu {
+pub struct MandelbrotCpu {
     threads: usize,
     image_width: usize,
     image_height: usize,
@@ -114,6 +113,21 @@ struct MandelbrotCpu {
     real_start: f64,
     i_start: f64,
     iterations: i32,
+}
+
+impl MandelbrotCpu {
+    fn default() -> MandelbrotCpu {
+        MandelbrotCpu {
+            threads: THREADS,
+            image_width: IMAGE_DIM,
+            image_height: IMAGE_DIM,
+            real_step: RADIUS / (IMAGE_DIM as f64),
+            i_step: RADIUS / (IMAGE_DIM as f64),
+            real_start: REAL_CENTER - (RADIUS / 2.0),
+            i_start: I_CENTER + (RADIUS / 2.0),
+            iterations: STABLE_ITERATIONS,
+        }
+    }
 }
 
 fn main() {
@@ -227,7 +241,7 @@ pub fn build_mandelbrot_cpu(options: &MandelbrotCpu) -> Vec<u8> {
             // Iterate over the slice pixel by pixel.
             for i in 0..this_height {
                 for j in 0..image_width {
-                    let point = Complex::new(&x, &y);
+                    let point = Complex::new(x, y);
                     // If this point is stable, draw a black pixel (1)
                     if point.is_stable(iterations) {
                         this_slice[j + (i * image_width)] = 0;
@@ -310,15 +324,22 @@ pub fn build_mandelbrot_cpu(options: &MandelbrotCpu) -> Vec<u8> {
 pub fn build_mandelbrot_cpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
     let mut final_image = vec![u8::MAX; options.image_width * options.image_height];
 
+    let mut x = options.real_start;
+    let mut y = options.i_start;
     for i in 0..options.image_height {
         for j in 0..options.image_width {
-            let x = options.real_start + (j as f64 * options.real_step);
-            let y = options.i_start - (i as f64 * options.i_step);
-            let point = Complex::new(&x, &y);
+            //let x = options.real_start + (j as f64 * options.real_step);
+            //let y = options.i_start - (i as f64 * options.i_step);
+            
+            let point = Complex::new(x, y);
             if point.is_stable(options.iterations) {
                 final_image[j + (i * options.image_width)] = 0;
             }
+            x += options.real_step;
         }
+        y -= options.i_step;
+        x = options.real_start;
+
     }
 
     final_image
