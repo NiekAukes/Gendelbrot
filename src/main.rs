@@ -1,10 +1,14 @@
+#![engine(cuda::engine)]
+
 use clap::{crate_version, Parser};
+use cuda::dmem::Buffer;
+use cuda::gpu;
 use image::ColorType;
 // use std::fs::File;
 // use std::io::prelude::*;
 use std::path::Path;
 use std::sync::mpsc;
-use std::thread;
+use std::{iter, thread};
 
 mod tests;
 
@@ -176,6 +180,11 @@ fn main() {
     );
 }
 
+
+// ==========================================================================
+//  CPU Mandelbrot Functions
+// ==========================================================================
+
 pub fn build_mandelbrot_cpu(options: &MandelbrotCpu) -> Vec<u8> {
     let MandelbrotCpu {
         threads,
@@ -343,4 +352,85 @@ pub fn build_mandelbrot_cpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
     }
 
     final_image
+}
+
+
+
+// ==========================================================================
+//  GPU Mandelbrot Functions
+// ==========================================================================
+
+
+#[kernel]
+fn mandelbrot_kernel(
+    mut image: Buffer<u8>,
+    image_width: usize,
+    image_height: usize,
+    real_start: f64,
+    i_start: f64,
+    real_step: f64,
+    i_step: f64,
+    iterations: i32,
+) {
+    let pos = gpu::global_tid_x() as usize;
+    let i = pos / image_width;
+    let j = pos % image_width;
+
+    if i >= image_height {
+        return; // Out of bounds
+    }
+    
+    // compute x and y coordinates in mandelbrot space
+    let x = real_start + (j as f64 * real_step);
+    let y = i_start - (i as f64 * i_step);
+
+    // Create a complex number from the x and y coordinates
+    let point = Complex::new(x, y);
+    //If the point is stable, set the pixel to black (1), otherwise leave it white (0)
+    if point.is_stable(iterations) {
+        image.set(i * image_width + j, 0); // Set pixel to black
+    } else {
+        image.set(i * image_width + j, u8::MAX); // Leave pixel white
+    }
+   
+
+    // report progress TODO
+}
+
+pub fn build_mandelbrot_gpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
+    let MandelbrotCpu {
+        image_width,
+        image_height,
+        real_start,
+        i_start,
+        real_step,
+        i_step,
+        iterations,
+        ..
+    } = *options;
+    // prepare arguments for the kernel
+    let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
+    let threads_per_block = 256;
+    let blocks = (image_width * image_height + threads_per_block - 1) / threads_per_block;
+    match mandelbrot_kernel.launch(
+        threads_per_block as usize,
+        blocks as usize,
+        image_buffer,
+        image_width,
+        image_height,
+        real_start,
+        i_start,
+        real_step,
+        i_step,
+        iterations,
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error launching kernel: {:?}", e);
+        }
+    }
+
+    println!("Waiting for GPU to finish...");
+    let result: Vec<u8> = image_buffer.retrieve().unwrap();
+    result
 }

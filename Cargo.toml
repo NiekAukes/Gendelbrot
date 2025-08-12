@@ -13,3 +13,5 @@ keywords = ["command-line", "mandelbrot", "generator"]
 clap = { version = "4.5.15", features = ["cargo", "derive"] }
 dunce = "1.0.5"
 image = "0.25.2"
+
+cuda = { path = "../rust-kernels/cuda" }

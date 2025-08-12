@@ -50,7 +50,7 @@ fn test_mandelbrot_cpu_broad() {
     for real_step in [0.01, 0.02, 0.04, 0.08] {
         for i_step in [0.01, 0.02, 0.04, 0.08] {
             let options = MandelbrotCpu {
-                threads: 1,
+                threads: 6,
                 image_width: 100,
                 image_height: 100,
                 real_start: -2.0,
@@ -83,4 +83,54 @@ fn export_image(image: &[u8], width: usize, height: usize, path: &str) {
         *pixel = image::Rgb([value, value, value]);
     }
     img.save(path).unwrap();
+}
+
+
+// ==================================================
+// GPU tests
+// ==================================================
+
+#[test]
+fn test_mandelbrot_gpu_default() {
+    let options = MandelbrotCpu::default();
+    let image = build_mandelbrot_gpu_simple(&options);
+    assert_eq!(image.len(), options.image_width * options.image_height);    
+    let expected_image = build_mandelbrot_cpu_simple(&options);
+
+    if image != expected_image {
+        println!("GPU image does not match expected output.");
+        export_image(&image, options.image_width, options.image_height, "gpu_output.png");
+        export_image(&expected_image, options.image_width, options.image_height, "expected_output.png");
+        assert!(false, "GPU image does not match expected output.");
+    }
+}
+
+
+#[test]
+fn test_mandelbrot_gpu_broad() {
+    for real_step in [0.01, 0.02, 0.04, 0.08] {
+        for i_step in [0.01, 0.02, 0.04, 0.08] {
+            let options = MandelbrotCpu {
+                threads: 1,
+                image_width: 100,
+                image_height: 100,
+                real_start: -2.0,
+                real_step,
+                i_start: 1.0,
+                i_step,
+                iterations: 1000,
+            };
+            let image = build_mandelbrot_gpu_simple(&options);
+            assert_eq!(image.len(), options.image_width * options.image_height);
+
+            let expected_image = build_mandelbrot_cpu_simple(&options);
+            //assert_eq!(image, expected_image);
+            if image != expected_image {
+                println!("Image does not match expected output for real_step: {}, i_step: {}", real_step, i_step);
+                export_image(&image, options.image_width, options.image_height, "images/gpu_output.png");
+                export_image(&expected_image, options.image_width, options.image_height, "images/expected_output.png");
+                assert!(false, "Image does not match expected output for real_step: {}, i_step: {}", real_step, i_step);
+            }
+        }
+    }
 }
