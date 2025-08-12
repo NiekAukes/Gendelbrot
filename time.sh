@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the two commands
-SIZE=10000
+SIZE=40000
 IMAGE_SIZE="$SIZE $SIZE"
 CMD1="./target/release/gendelbrot --gpu --image-size $IMAGE_SIZE -o output_gpu.png"
 CMD2="./target/release/gendelbrot --image-size $IMAGE_SIZE -o output_cpu.png --threads 16"

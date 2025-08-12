@@ -17,7 +17,7 @@ use cuda::dmem::{Buffer, DSend};
 const THREADS: usize = 1;
 
 // Default number of stable iterations (see Complex::is_stable below)
-const STABLE_ITERATIONS: i32 = 500;
+const STABLE_ITERATIONS: i32 = 50;
 
 // Default width and height of the image in mandelbrot space
 const RADIUS: f64 = 3.0;
@@ -69,8 +69,8 @@ struct Args {
 // Simple struct for complex numbers
 #[derive(Debug, Clone)]
 struct Complex {
-    real: f64,
-    imaginary: f64,
+    real: f32,
+    imaginary: f32,
 }
 
 // The functions below execute various calculations according to how a mandelbrot is generated,
@@ -79,6 +79,7 @@ struct Complex {
 // https://www.youtube.com/watch?v=FFftmWSzgmk
 impl Complex {
     // Iterates the complex number once using the mandelbrot algorithm
+    #[inline(always)]
     fn iterate(&mut self, origin: &Complex) {
         let copy = self.clone();
         self.real = (copy.real * copy.real) - (copy.imaginary * copy.imaginary) + origin.real;
@@ -86,18 +87,16 @@ impl Complex {
     }
 
     // Checks to see if the complex number has gone past the escape radius
+    #[inline(always)]
     fn has_escaped(&self) -> bool {
-        if self.real * self.real + self.imaginary * self.imaginary >= 4.0 {
-            return true;
-        }
-        false
+        return self.real * self.real + self.imaginary * self.imaginary >= 4.0
     }
 
     // Returns a new complex number
-    fn new(x: &f64, y: &f64) -> Complex {
+    fn new(x: f32, y: f32) -> Complex {
         Complex {
-            real: *x,
-            imaginary: *y,
+            real: x,
+            imaginary: y,
         }
     }
 
@@ -107,7 +106,7 @@ impl Complex {
     // assuming it doesn't escape before then.
     fn is_stable(&self, stable_iterations: i32) -> bool {
         let mut copy: Complex = self.clone();
-        for _i in 0..stable_iterations {
+        for _ in 0..stable_iterations {
             if copy.has_escaped() {
                 return false;
             }
@@ -124,10 +123,10 @@ fn compute_mandelbrot(
     offset: usize,
     image_width: usize,
     image_height: usize,
-    real_start: f64,
-    i_start: f64,
-    real_step: f64,
-    i_step: f64,
+    real_start: f32,
+    i_start: f32,
+    real_step: f32,
+    i_step: f32,
     //mut progress: Shared<AtomI32>,
 ) {
     let pos = offset + gpu::global_tid_x() as usize;
@@ -139,20 +138,35 @@ fn compute_mandelbrot(
     }
 
     // sync to ensure we can use warp optimizations
-    gpu::syncthreads();
+    //gpu::syncthreads();
     
     // compute x and y coordinates in mandelbrot space
-    let x = real_start + (j as f64 * real_step);
-    let y = i_start - (i as f64 * i_step);
+    let x = real_start + (j as f32 * real_step);
+    let y = i_start - (i as f32 * i_step);
 
     // Create a complex number from the x and y coordinates
-    let point = Complex::new(&x, &y);
-    //If the point is stable, set the pixel to black (1), otherwise leave it white (0)
-    if point.is_stable(STABLE_ITERATIONS) {
-        image.set(i * image_width + j, 0); // Set pixel to black
-    } else {
-        image.set(i * image_width + j, u8::MAX); // Leave pixel white
-    }
+    // let point = Complex::new(&x, &y);
+    // //If the point is stable, set the pixel to black (1), otherwise leave it white (0)
+    // let is_stable = point.is_stable(STABLE_ITERATIONS);
+    // //let is_stable = is_stable(x, y, STABLE_ITERATIONS);
+    // gpu::syncthreads();
+    // if is_stable {
+    //     image.set(i * image_width + j, 0); // Set pixel to black
+    // } else {
+    //     image.set(i * image_width + j, u8::MAX); // Leave pixel white
+    // }
+
+    let escaped = Complex::new(x, y).is_stable(STABLE_ITERATIONS);
+
+    // let value = if escaped {
+    //     0 // Set pixel to black if escaped
+    // } else {
+    //     u8::MAX // Leave pixel white if stable
+    // };
+    let value = escaped as u8 * u8::MAX; // Set pixel to black if stable, white if escaped
+
+    image.set(i * image_width + j, value);
+
 }
 
 
@@ -193,7 +207,13 @@ fn main() {
 
     println!("Generating Image...");
     // Start spawning threads
+
     let final_image: Vec<u8> = if args.gpu {
+
+
+        // start timer
+        let start = std::time::Instant::now();
+
         let total = image_width * image_height;
 
         let image_buffer: Buffer<u8> = Buffer::alloc(image_width * image_height).unwrap();
@@ -206,19 +226,28 @@ fn main() {
         let mut image_buffer_d = image_buffer.to_device().unwrap();
         let mut image_width_d = image_width.to_device().unwrap();
         let mut image_height_d = image_height.to_device().unwrap();
-        let mut real_start_d = real_start.to_device().unwrap();
-        let mut i_start_d = i_start.to_device().unwrap();
-        let mut real_step_d = real_step.to_device().unwrap();
-        let mut i_step_d = i_step.to_device().unwrap();
+        let mut real_start_d = (real_start as f32).to_device().unwrap();
+        let mut i_start_d = (i_start as f32).to_device().unwrap();
+        let mut real_step_d = (real_step as f32).to_device().unwrap();
+        let mut i_step_d = (i_step as f32).to_device().unwrap();
         
 
         println!("Waiting for GPU to finish...");
 
         // step is calculated based on how many pixels we want to generate at a time
-        let blocks_per_step = (total as f64 / threads_per_block as f64 / 100.0).ceil() as usize;
+        let mut blocks_per_step = (total as f64 / threads_per_block as f64 / 100.0).ceil() as usize;
+        if blocks_per_step < 100 {
+            blocks_per_step = total as usize / threads_per_block;
+        }
         let offset_step = threads_per_block * blocks_per_step;
         
         let mut offset = 0;
+
+        // checkpoint timer
+        let mut checkpoint = start.elapsed().as_secs_f64();
+        println!("GPU initialized in {:.2} seconds", checkpoint);
+        let start = std::time::Instant::now();
+        
         while offset < total as usize {
             // generate chucks of the mandelbrot set
             let mut offset_d = offset.to_device().unwrap();
@@ -241,17 +270,30 @@ fn main() {
                     return;
                 }
             }
+            if offset == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             offset += offset_step;
             
             print!("Progress: {}%  \r", (offset as f64 / total as f64 * 100.0).round());
             // Flush the output to ensure the progress is displayed
             std::io::stdout().flush().unwrap();
+            
             cuda::device_sync().unwrap();
         }
 
-        let result: Vec<u8> = image_buffer.retrieve().unwrap();
+        // checkpoint timer
+        checkpoint = start.elapsed().as_secs_f64();
+        println!("\nGPU finished in {:.2} seconds", checkpoint);
+        
 
-        println!("\nImage generated using GPU.");
+        let result: Vec<u8> = image_buffer.retrieve().unwrap();
+        //let result = vec![0; image_width * image_height]; // Placeholder for the actual GPU result
+
+        checkpoint = start.elapsed().as_secs_f64();
+        println!("Image retrieved using GPU in {:.2} seconds.", checkpoint);
+
+        println!("Image generated using GPU.");
         result
     } else {
         for i in 0..threads {
@@ -286,7 +328,7 @@ fn main() {
                 // Iterate over the slice pixel by pixel.
                 for i in 0..this_height {
                     for j in 0..image_width {
-                        let point = Complex::new(&x, &y);
+                        let point = Complex::new(x as f32, y as f32);
                         // If this point is stable, draw a black pixel (1)
                         if point.is_stable(args.iterations) {
                             this_slice[j + (i * image_width)] = 0;
@@ -362,6 +404,7 @@ fn main() {
         }
         final_image
     };
+
 
     
 
