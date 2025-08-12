@@ -58,6 +58,11 @@ struct Args {
     // The name of the image file with the file extension
     #[arg(short='o', long, help="Name of the outputted image file, must include a file extension.", long_help = "Name of the outputted image file, must include a file extension. (Only jpeg, png, ico, pnm, bmp, exr and tiff files are supported)", default_value = IMAGE_NAME)]
     file: String,
+
+    // whether to use the GPU or not
+    #[arg(long, help = "Use the GPU to calculate the mandelbrot image",
+        long_help = "Use the GPU to calculate the mandelbrot image.")]
+    gpu: bool,
 }
 
 // Simple struct for complex numbers
@@ -158,7 +163,12 @@ fn main() {
         i_start,
         iterations: args.iterations,
     };
-    let final_image = build_mandelbrot_cpu(&options);
+    let final_image = if args.gpu {
+        build_mandelbrot_gpu_simple(&options)
+    } else {
+        // If the GPU is not used, use the CPU version
+        build_mandelbrot_cpu(&options)
+    };
 
     // Create the image file with the given name
     let image_path = Path::new(&args.file);
