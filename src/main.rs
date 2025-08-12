@@ -105,11 +105,22 @@ impl Complex {
     }
 }
 
+struct MandelbrotCpu {
+    threads: usize,
+    image_width: usize,
+    image_height: usize,
+    real_step: f64,
+    i_step: f64,
+    real_start: f64,
+    i_start: f64,
+    iterations: i32,
+}
+
 fn main() {
     // Parse the command line arguments and store the most commonly used ones in variables
     let args = Args::parse();
-    let image_width = args.image_size[0];
-    let image_height = args.image_size[1];
+    let image_width: usize = args.image_size[0];
+    let image_height: usize = args.image_size[1];
 
     let real_step: f64 = args.size[0] / (image_width as f64);
     let i_step: f64 = args.size[1] / (image_height as f64);
@@ -119,8 +130,49 @@ fn main() {
 
     let threads = args.threads;
 
-    // Initialize an array to hold a slice of the final image for each thread
-    let mut image_slices = vec![];
+    let options = MandelbrotCpu {
+        threads,
+        image_width: image_width,
+        image_height: image_height,
+        real_step,
+        i_step,
+        real_start,
+        i_start,
+        iterations: args.iterations,
+    };
+    let final_image = build_mandelbrot_cpu(&options);
+
+    // Create the image file with the given name
+    let image_path = Path::new(&args.file);
+
+    // Write the image contents to a file (format automatically deduced from filename)
+    image::save_buffer(
+        image_path,
+        &final_image,
+        image_width as u32,
+        image_height as u32,
+        ColorType::L8,
+    )
+    .expect("Couldn't create or overwrite file!");
+
+    // Done! (image files close automatically when dropped)
+    println!(
+        "\nDone. File outputted to {:?}",
+        dunce::canonicalize(Path::new(&args.file)).unwrap()
+    );
+}
+
+pub fn build_mandelbrot_cpu(options: &MandelbrotCpu) -> Vec<u8> {
+    let MandelbrotCpu {
+        threads,
+        image_width,
+        image_height,
+        real_step,
+        i_step,
+        real_start,
+        i_start,
+        iterations,
+    } = *options;
 
     // Create two senders and recievers for thread communication,
     // one for progress reports, and one to receive the completed image
@@ -128,6 +180,9 @@ fn main() {
     // was created before I knew about thread joining, possible TODO)
     let (tx, rx) = mpsc::channel();
     let (ptx, prx) = mpsc::channel();
+
+    // Initialize an array to hold a slice of the final image for each thread
+    let mut image_slices = vec![];
 
     // Split the image up into even vertical slices, accounting for any remaining height
     let slice_height = image_height / threads;
@@ -174,7 +229,7 @@ fn main() {
                 for j in 0..image_width {
                     let point = Complex::new(&x, &y);
                     // If this point is stable, draw a black pixel (1)
-                    if point.is_stable(args.iterations) {
+                    if point.is_stable(iterations) {
                         this_slice[j + (i * image_width)] = 0;
                     }
                     x += real_step;
@@ -248,22 +303,23 @@ fn main() {
         final_image.append(&mut slice.1);
     }
 
-    // Create the image file with the given name
-    let image_path = Path::new(&args.file);
+    final_image
+}
 
-    // Write the image contents to a file (format automatically deduced from filename)
-    image::save_buffer(
-        image_path,
-        &final_image,
-        image_width as u32,
-        image_height as u32,
-        ColorType::L8,
-    )
-    .expect("Couldn't create or overwrite file!");
+/// A simple version of the mandelbrot generator that does not use threads.
+pub fn build_mandelbrot_cpu_simple(options: &MandelbrotCpu) -> Vec<u8> {
+    let mut final_image = vec![u8::MAX; options.image_width * options.image_height];
 
-    // Done! (image files close automatically when dropped)
-    println!(
-        "\nDone. File outputted to {:?}",
-        dunce::canonicalize(Path::new(&args.file)).unwrap()
-    );
+    for i in 0..options.image_height {
+        for j in 0..options.image_width {
+            let x = options.real_start + (j as f64 * options.real_step);
+            let y = options.i_start - (i as f64 * options.i_step);
+            let point = Complex::new(&x, &y);
+            if point.is_stable(options.iterations) {
+                final_image[j + (i * options.image_width)] = 0;
+            }
+        }
+    }
+
+    final_image
 }
